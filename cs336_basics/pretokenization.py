@@ -1,9 +1,8 @@
 from collections import defaultdict
 import os
 import time
-from typing import BinaryIO
 import regex as re
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 
 
 def find_chunk_boundaries(file_path: str, desired_num_chunks: int, special_tokens: list[bytes]) -> list[int]:
@@ -122,7 +121,6 @@ def pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int 
     Find the vocabulary from a file using the specified special tokens.
     Uses multiprocessing for parallel chunk processing.
     """
-    start = time.time()
     boundaries = find_chunk_boundaries(file_path, num_processes, special_tokens)
 
     args = [(file_path, (boundaries[i], boundaries[i + 1]), special_tokens) for i in range(len(boundaries) - 1)]
@@ -135,8 +133,6 @@ def pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int 
     for chunk_vocab in result:
         for token, count in chunk_vocab.items():
             vocab[token] += count
-    end = time.time()
-    print(f"Pre-tokenization completed in {end - start:.2f} seconds.")
     return vocab
 
 
@@ -147,10 +143,18 @@ def _wrapper_find_chunk_vocab(args):
 
 ## Usage
 if __name__ == "__main__":
-    num_processes = 1  # Example number of processes to use
+    import argparse
+    parser = argparse.ArgumentParser(description="Pre-tokenize a file into vocabulary counts.")
+    parser.add_argument("-n", "--num_processes", type=int, default=1, help="Number of processes to use for tokenization.")
+    args = parser.parse_args()
+    
+    num_processes = args.num_processes
     file_path = "data/TinyStoriesV2-GPT4-valid.txt"
     special_tokens = [b"<|endoftext|>"]
     chunk_boundaries = find_chunk_boundaries(file_path, num_processes, special_tokens)
     # print_chunk_boundaries_preview(file_path, chunk_boundaries)
+    start = time.time()
     vocab = pretokenize(file_path, special_tokens, num_processes=num_processes)
+    end = time.time()
+    print(f"Tokenization completed in {end - start:.2f} seconds using {num_processes} processes.")
     print_vocab(vocab, topn=10)
