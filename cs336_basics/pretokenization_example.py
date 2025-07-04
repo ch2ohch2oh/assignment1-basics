@@ -4,15 +4,15 @@ from typing import BinaryIO
 def find_chunk_boundaries(
     file: BinaryIO, 
     desired_num_chunks: int, 
-    split_special_token: bytes
+    split_special_tokens: list[bytes]
 ) -> list[int]:
     """
     Chunk the file into parts that can be counted independently.
     May return fewer chunks if the boundaries end up overlapping.
     """
-    assert isinstance(split_special_token, bytes), (
-        "Must represent special token as a bytestring"
-    )
+    for s in split_special_tokens:
+        if not isinstance(s, bytes):
+            raise ValueError("All special tokens must be bytestrings")
 
     # Get total file size in bytes
     file.seek(0, os.SEEK_END)
@@ -40,9 +40,12 @@ def find_chunk_boundaries(
                 break
 
             # Find the special token in the mini chunk
-            found_at = mini_chunk.find(split_special_token)
+            for tok in split_special_tokens:
+                found_at = mini_chunk.find(tok)
+                if found_at != -1:
+                    chunk_boundaries[bi] = initial_position + found_at
+                    break
             if found_at != -1:
-                chunk_boundaries[bi] = initial_position + found_at
                 break
             initial_position += mini_chunk_size
 
@@ -50,13 +53,16 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 ## Usage
-with open(..., "rb") as f:
-    boundaries = find_chunk_boundaries(
-        f, num_processes, "<|endoftext|>".encode("utf-8"))
-        
-    # The following is a serial implementation, but you can parallelize this 
-    # by sending each start/end pair to a set of processes.
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
+if __name__ == "__main__":    
+    num_processes = 16  # Example number of processes to use
+    with open("data/TinyStoriesV2-GPT4-valid.txt", "rb") as f:
+        boundaries = find_chunk_boundaries(
+            f, num_processes, ["<|endoftext|>".encode("utf-8")])
+            
+        # The following is a serial implementation, but you can parallelize this 
+        # by sending each start/end pair to a set of processes.
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            # Run pre-tokenization on your chunk and store the counts for each pre-token
+            print(f"Chunk from {start} to {end}: {chunk[:100]}...")
