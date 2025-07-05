@@ -101,6 +101,10 @@ def tokenize_chunk(file_path: str, boundaries: tuple[int, int], special_tokens: 
             if vocab[last.group(0)] == 0:
                 del vocab[last.group(0)]
             buffer = clean_buffer[last.start() :]
+    if buffer:
+        # Process any remaining buffer after the last read
+        for match in re.finditer(token_pattern, buffer):
+            vocab[match.group(0)] += 1
     return vocab
 
 
@@ -117,6 +121,24 @@ def print_vocab(vocab: dict[bytes, int], topn: int = 20) -> None:
 
 
 def pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int = 1) -> dict[bytes, int]:
+    """
+    Tokenize a chunk of the file and return a dictionary of token counts. Discards special tokens. Naive version.
+    """
+    vocab = defaultdict(int)
+    pretoken_pattern = re.compile(rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+    special_token_pattern = re.compile(b"|".join([re.escape(tok) for tok in special_tokens]))
+
+    with open(file_path, "rb") as file:
+        text_bytes = file.read()
+
+    # !!! It is NOT correct to use `re.sub` here, because the tokens before and after special tokens may be joined together **incorrectly**.
+    for stripped_text in special_token_pattern.split(text_bytes):
+        # Tokenize each clean segment without special tokens
+        for token_match in pretoken_pattern.finditer(stripped_text):
+            vocab[token_match.group(0)] += 1
+    return vocab
+
+def _pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int = 1) -> dict[bytes, int]:
     """
     Find the vocabulary from a file using the specified special tokens.
     Uses multiprocessing for parallel chunk processing.

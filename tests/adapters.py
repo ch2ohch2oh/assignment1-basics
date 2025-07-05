@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import os
 from typing import IO, Any, BinaryIO
 from collections.abc import Iterable
@@ -9,6 +10,7 @@ import numpy.typing as npt
 import torch
 from torch import Tensor
 
+from cs336_basics.pretokenizer import pretokenize
 
 
 def run_linear(
@@ -25,7 +27,7 @@ def run_linear(
         out_dim (int): The size of the output dimension
         weights (Float[Tensor, "d_out d_in"]): The linear weights to use
         in_features (Float[Tensor, "... d_in"]): The output tensor to apply the function to
-    
+
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
@@ -47,7 +49,7 @@ def run_embedding(
         d_model (int): The size of the embedding dimension
         weights (Float[Tensor, "vocab_size d_model"]): The embedding vectors to fetch from
         token_ids (Int[Tensor, "..."]): The set of token ids to fetch from the Embedding layer
-    
+
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
@@ -302,7 +304,7 @@ def run_transformer_lm(
             evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
         rope_theta (float): The RoPE $\Theta$ parameter.
-        weights (dict[str, Tensor]): 
+        weights (dict[str, Tensor]):
             State dict of our reference implementation. {num_layers} refers to an
             integer between `0` and `num_layers - 1` (the layer index).
             The keys of this dictionary are:
@@ -435,7 +437,9 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
     raise NotImplementedError
 
 
-def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]) -> Float[Tensor, ""]:
+def run_cross_entropy(
+    inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
+) -> Float[Tensor, ""]:
     """Given a tensor of inputs and targets, compute the average cross-entropy
     loss across examples.
 
@@ -588,4 +592,67 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    vocab = [s.encode("utf-8") for s in special_tokens]
+    for x in range(256):
+        vocab.append(
+            bytes([x])
+        )  # Do NOT use chr(x).encode("utf-8") here. It will convert 128 to 2 bytes, which is not what we want.
+
+    merges = []
+    words = {
+        tuple([bytes([c]) for c in t]): count
+        for t, count in pretokenize(
+            input_path,
+            special_tokens=[s.encode("utf-8") for s in special_tokens],
+            num_processes=1,
+        ).items()
+    }
+
+    # Print words keys for debugging
+    # print(f"Words: {list(words.keys())[:10]}... (total {len(words)} unique tokens)")
+
+    total_merges = vocab_size - len(vocab)
+    for merge_idx in range(total_merges):
+        pair_counts = defaultdict(int)
+        for tokens, count in words.items():
+            for i in range(len(tokens) - 1):
+                pair = (tokens[i], tokens[i + 1])
+                pair_counts[pair] += count
+
+        if not pair_counts:
+            raise ValueError("No more pairs to merge. Vocabulary size may be too small.")
+
+        most_common_pair = (b"", b"")
+        for pair, count in pair_counts.items():
+            if count > pair_counts.get(most_common_pair, 0):
+                most_common_pair = pair
+            elif (
+                count == pair_counts.get(most_common_pair, 0) and pair > most_common_pair
+            ):  # !!! Do NOT concatenate the pair then compare
+                most_common_pair = pair
+        # print(sorted(pair_counts.items(), key=lambda x: x[1], reverse=True)[:10])
+        # pair_text = f"({most_common_pair[0].decode('utf-8')} {most_common_pair[1].decode('utf-8')})"
+        # pair_text = repr(most_common_pair)
+        # print(f"[{merge_idx + 1}]-th merge: {pair_text} with count {pair_counts[most_common_pair]}")
+        # print([list(s) for s in most_common_pair])
+        merges.append(most_common_pair)
+        vocab.append(b"".join(most_common_pair))
+        # print("Last added vocab:", vocab[-1:])
+
+        new_words = defaultdict(int)
+        for tokens, count in words.items():
+            new_tokens = []
+            i = 0
+            while i < len(tokens):
+                if i < len(tokens) - 1 and (tokens[i], tokens[i + 1]) == most_common_pair:
+                    new_tokens.append(most_common_pair[0] + most_common_pair[1])
+                    i += 2
+                else:
+                    new_tokens.append(tokens[i])
+                    i += 1
+            new_words[tuple(new_tokens)] += count
+        words = new_words
+
+    # print("Vocabulary size:", len(vocab))
+    # print("Vocabulary:", vocab)
+    return ({i: token for i, token in enumerate(vocab)}, merges)
