@@ -601,11 +601,7 @@ def run_train_bpe(
     merges = []
     words = {
         tuple([bytes([c]) for c in t]): count
-        for t, count in pretokenize(
-            input_path,
-            special_tokens=[s.encode("utf-8") for s in special_tokens],
-            num_processes=1,
-        ).items()
+        for t, count in pretokenize(input_path, special_tokens=[s.encode("utf-8") for s in special_tokens]).items()
     }
 
     total_merges = vocab_size - len(vocab)
