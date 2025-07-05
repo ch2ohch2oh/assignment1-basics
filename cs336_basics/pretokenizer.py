@@ -31,7 +31,7 @@ def find_chunk_boundaries(file_path: str, desired_num_chunks: int, special_token
     chunk_boundaries[-1] = file_size
 
     mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
-    
+
     # Use a 'with' statement to ensure the file is properly closed.
     with open(file_path, "rb") as f:
         # Adjust each boundary (except the first and last) to align with a special token.
@@ -45,7 +45,7 @@ def find_chunk_boundaries(file_path: str, desired_num_chunks: int, special_token
                 buffer = f.read(mini_chunk_size)
                 if not buffer:  # Reached end of file
                     chunk_boundaries[i] = file_size
-                    del chunk_boundaries[i + 1:]  # Remove any remaining boundaries
+                    del chunk_boundaries[i + 1 :]  # Remove any remaining boundaries
                     break
 
                 match = special_token_pattern.search(buffer)
@@ -76,35 +76,25 @@ def print_chunk_boundaries_preview(file_path: str, boundaries: list[int]) -> Non
             print(chunk[:100].decode("utf-8", errors="ignore"), "...\n")  # Print first 100 chars
 
 
-def tokenize_chunk(file_path: str, boundaries: tuple[int, int], special_tokens: list[bytes]) -> dict[bytes, int]:
+def pretokenize_chunk(
+    file_path: str, boundaries: tuple[int, int], special_tokens: list[bytes], mini_chunk_size: int = 4096
+) -> dict[bytes, int]:
     """
     Tokenize a chunk of the file and return a dictionary of token counts. Discards special tokens.
     """
     vocab = defaultdict(int)
     start, end = boundaries
-    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
-    buffer = b""
-    token_pattern = rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-    special_token_pattern = b"|".join(re.escape(tok) for tok in special_tokens)
+    pretoken_pattern = re.compile(rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+    special_token_pattern = re.compile(b"|".join(re.escape(tok) for tok in special_tokens))
 
     with open(file_path, "rb") as file:
-        while start < end:
-            file.seek(start)
-            chunk = file.read(min(mini_chunk_size, end - start))
-            start += len(chunk)
-            buffer += chunk
-            clean_buffer = re.sub(special_token_pattern, b"", buffer)  # Remove special tokens
-            for match in re.finditer(token_pattern, clean_buffer):
-                vocab[match.group(0)] += 1
-                last = match
-            vocab[last.group(0)] -= 1  # Remove last token since it could be incomplete due to chunking
-            if vocab[last.group(0)] == 0:
-                del vocab[last.group(0)]
-            buffer = clean_buffer[last.start() :]
-    if buffer:
-        # Process any remaining buffer after the last read
-        for match in re.finditer(token_pattern, buffer):
-            vocab[match.group(0)] += 1
+        file.seek(start)
+        text_bytes = file.read(end - start)
+
+    for stripped_text in special_token_pattern.split(text_bytes):
+        # Tokenize each clean segment without special tokens
+        for token_match in pretoken_pattern.finditer(stripped_text):
+            vocab[token_match.group(0)] += 1
     return vocab
 
 
@@ -120,7 +110,7 @@ def print_vocab(vocab: dict[bytes, int], topn: int = 20) -> None:
         print(f"{token} => {count}")
 
 
-def pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int = 1) -> dict[bytes, int]:
+def _pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int = 1) -> dict[bytes, int]:
     """
     Tokenize a chunk of the file and return a dictionary of token counts. Discards special tokens. Naive version.
     """
@@ -138,11 +128,15 @@ def pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int 
             vocab[token_match.group(0)] += 1
     return vocab
 
-def _pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int = 1) -> dict[bytes, int]:
+
+def pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int = -1) -> dict[bytes, int]:
     """
     Find the vocabulary from a file using the specified special tokens.
     Uses multiprocessing for parallel chunk processing.
     """
+    if num_processes < 1:
+        num_processes = os.cpu_count() or 1
+
     boundaries = find_chunk_boundaries(file_path, num_processes, special_tokens)
 
     args = [(file_path, (boundaries[i], boundaries[i + 1]), special_tokens) for i in range(len(boundaries) - 1)]
@@ -160,16 +154,19 @@ def _pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int
 
 # Wrapper to make multiprocessing safe
 def _wrapper_find_chunk_vocab(args):
-    return tokenize_chunk(*args)
+    return pretokenize_chunk(*args)
 
 
 ## Usage
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Pre-tokenize a file into vocabulary counts.")
-    parser.add_argument("-n", "--num_processes", type=int, default=1, help="Number of processes to use for tokenization.")
+    parser.add_argument(
+        "-n", "--num_processes", type=int, default=1, help="Number of processes to use for tokenization."
+    )
     args = parser.parse_args()
-    
+
     num_processes = args.num_processes
     file_path = "data/TinyStoriesV2-GPT4-valid.txt"
     special_tokens = [b"<|endoftext|>"]

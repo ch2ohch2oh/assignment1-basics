@@ -608,9 +608,6 @@ def run_train_bpe(
         ).items()
     }
 
-    # Print words keys for debugging
-    # print(f"Words: {list(words.keys())[:10]}... (total {len(words)} unique tokens)")
-
     total_merges = vocab_size - len(vocab)
     for merge_idx in range(total_merges):
         pair_counts = defaultdict(int)
@@ -630,14 +627,9 @@ def run_train_bpe(
                 count == pair_counts.get(most_common_pair, 0) and pair > most_common_pair
             ):  # !!! Do NOT concatenate the pair then compare
                 most_common_pair = pair
-        # print(sorted(pair_counts.items(), key=lambda x: x[1], reverse=True)[:10])
-        # pair_text = f"({most_common_pair[0].decode('utf-8')} {most_common_pair[1].decode('utf-8')})"
-        # pair_text = repr(most_common_pair)
-        # print(f"[{merge_idx + 1}]-th merge: {pair_text} with count {pair_counts[most_common_pair]}")
-        # print([list(s) for s in most_common_pair])
+
         merges.append(most_common_pair)
         vocab.append(b"".join(most_common_pair))
-        # print("Last added vocab:", vocab[-1:])
 
         new_words = defaultdict(int)
         for tokens, count in words.items():
@@ -653,6 +645,4 @@ def run_train_bpe(
             new_words[tuple(new_tokens)] += count
         words = new_words
 
-    # print("Vocabulary size:", len(vocab))
-    # print("Vocabulary:", vocab)
     return ({i: token for i, token in enumerate(vocab)}, merges)
