@@ -4,11 +4,13 @@ import time
 import regex as re
 from concurrent.futures import ProcessPoolExecutor
 
+GPT_PRETOKEN_PATTERN = re.compile(rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
 
 def find_chunk_boundaries(file_path: str, desired_num_chunks: int, special_tokens: list[bytes]) -> list[int]:
     """
     Chunk the file into parts that starts with `split_special_tokens`.
-    May return fewer chunks if the boundaries end up overlapping.
+    When no special tokens are found, make sure one valid token is not split across chunks.
     """
     for s in special_tokens:
         if not isinstance(s, bytes):
@@ -24,41 +26,37 @@ def find_chunk_boundaries(file_path: str, desired_num_chunks: int, special_token
 
     special_token_pattern = re.compile(b"|".join(re.escape(tok) for tok in special_tokens))
 
-    # Initial guesses for chunk boundary locations, uniformly spaced.
-    # The first boundary is always 0 and the last is file_size.
     chunk_size = file_size // desired_num_chunks
     chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
     chunk_boundaries[-1] = file_size
 
     mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
 
-    # Use a 'with' statement to ensure the file is properly closed.
     with open(file_path, "rb") as f:
-        # Adjust each boundary (except the first and last) to align with a special token.
         for i in range(1, len(chunk_boundaries) - 1):
             search_pos = chunk_boundaries[i]
 
-            # Search forward from the initial guess until a token is found or EOF.
             while search_pos < file_size:
                 f.seek(search_pos)
-                # Read a reasonably sized buffer to search for the token.
                 buffer = f.read(mini_chunk_size)
                 if not buffer:  # Reached end of file
                     chunk_boundaries[i] = file_size
-                    del chunk_boundaries[i + 1 :]  # Remove any remaining boundaries
                     break
 
                 match = special_token_pattern.search(buffer)
                 if match:
-                    # Found a token, align boundary and move to the next one.
                     chunk_boundaries[i] = search_pos + match.start()
                     break
-
-                # No token in this buffer, advance search position.
+                match = GPT_PRETOKEN_PATTERN.search(buffer)
+                if match:
+                    # Ensure we don't split a token across chunks
+                    if match.start() > 0:
+                        chunk_boundaries[i] = search_pos + match.start()
+                    else:
+                        chunk_boundaries[i] = search_pos + match.end()
+                    break
                 search_pos += len(buffer)
 
-    # De-duplicate and sort boundaries. This handles cases where chunking
-    # logic might make two boundaries identical (e.g., on small files).
     return sorted(set(chunk_boundaries))
 
 
@@ -76,9 +74,7 @@ def print_chunk_boundaries_preview(file_path: str, boundaries: list[int]) -> Non
             print(chunk[:100].decode("utf-8", errors="ignore"), "...\n")  # Print first 100 chars
 
 
-def pretokenize_chunk(
-    file_path: str, boundaries: tuple[int, int], special_tokens: list[bytes], mini_chunk_size: int = 4096
-) -> dict[bytes, int]:
+def pretokenize_chunk(file_path: str, boundaries: tuple[int, int], special_tokens: list[bytes]) -> dict[bytes, int]:
     """
     Tokenize a chunk of the file and return a dictionary of token counts. Discards special tokens.
     """
@@ -90,6 +86,9 @@ def pretokenize_chunk(
     with open(file_path, "rb") as file:
         file.seek(start)
         text_bytes = file.read(end - start)
+        assert len(text_bytes) == end - start, "Read chunk size does not match expected size."
+
+    # print(f"Processing chunk from {start} to {end}, size: {len(text_bytes)} bytes, first 100 bytes: {text_bytes[:100]}")
 
     for stripped_text in special_token_pattern.split(text_bytes):
         # Tokenize each clean segment without special tokens
@@ -139,6 +138,8 @@ def pretokenize(file_path: str, special_tokens: list[bytes], num_processes: int 
 
     boundaries = find_chunk_boundaries(file_path, num_processes, special_tokens)
 
+    # print("Chunk boundaries found:", boundaries)
+
     args = [(file_path, (boundaries[i], boundaries[i + 1]), special_tokens) for i in range(len(boundaries) - 1)]
 
     vocab = defaultdict(int)
@@ -165,10 +166,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "-n", "--num_processes", type=int, default=1, help="Number of processes to use for tokenization."
     )
+    parser.add_argument("-o", "--output_file", type=str, help="Output file to save the vocabulary.")
     args = parser.parse_args()
 
     num_processes = args.num_processes
     file_path = "data/TinyStoriesV2-GPT4-valid.txt"
+    # file_path = "tests/fixtures/tinystories_sample_5M.txt"
     special_tokens = [b"<|endoftext|>"]
     chunk_boundaries = find_chunk_boundaries(file_path, num_processes, special_tokens)
     # print_chunk_boundaries_preview(file_path, chunk_boundaries)
@@ -177,3 +180,10 @@ if __name__ == "__main__":
     end = time.time()
     print(f"Tokenization completed in {end - start:.2f} seconds using {num_processes} processes.")
     print_vocab(vocab, topn=10)
+    if args.output_file:
+        with open(args.output_file, "w") as f:
+            for token, count in sorted(vocab.items(), key=lambda x: x[1], reverse=True):
+                f.write(f"{token} => {count}\n")
+        print(f"Vocabulary saved to {args.output_file}")
+    else:
+        print_vocab(vocab)
